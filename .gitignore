@@ -1,0 +1,23 @@
+# Python virtual environments
+venv/
+.venv/
+tf_claude/venv/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+tf_claude/venv/
+
+# Reports
+*.html
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+.terraform*

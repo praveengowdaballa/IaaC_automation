@@ -1,0 +1,13 @@
+buckets:
+  - name: my-prod-bucket-001
+    versioning: true
+    environment: prod
+    tags:
+      owner: security
+      compliance: pci
+
+  - name: shared-logs-bucket
+    versioning: false
+    environment: shared
+    tags:
+      owner: infra
