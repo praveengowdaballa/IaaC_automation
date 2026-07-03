@@ -45,6 +45,7 @@ def generate_html_report(
     config: TerraformDiffConfig,
     changes_data: Dict[str, Any],
     llm_explanation: str = "",
+    graph_svg_path: str = "graph.svg",
 ) -> str:
     """
     Generate complete HTML report with changes and optional LLM analysis.
@@ -53,11 +54,32 @@ def generate_html_report(
         config: Active TerraformDiffConfig (provides color maps and row cap)
         changes_data: Dictionary with extracted changes (from change_extractor)
         llm_explanation: LLM analysis text (optional)
+        graph_svg_path: Path to a pre-rendered `terraform graph | dot -Tsvg`
+            output. If the file exists, a "Dependency Graph" tab is added
+            with pan/zoom and node search. If missing, the tab is silently
+            skipped so the report still works without it.
 
     Returns:
         HTML content as string
     """
     logger.info("Generating HTML report...")
+
+    graph_svg_markup = ""
+    try:
+        with open(graph_svg_path, "r", encoding="utf-8") as f:
+            graph_svg_markup = f.read()
+        # Strip the XML prolog/doctype so it can be embedded inline; keep
+        # everything from the opening <svg tag onward.
+        svg_start = graph_svg_markup.find("<svg")
+        if svg_start != -1:
+            graph_svg_markup = graph_svg_markup[svg_start:]
+        else:
+            logger.info(f"⚠️ {graph_svg_path} did not contain an <svg> tag, skipping graph tab")
+            graph_svg_markup = ""
+    except (FileNotFoundError, OSError):
+        logger.info(f"ℹ️ No dependency graph found at {graph_svg_path}, skipping graph tab")
+
+    has_graph = bool(graph_svg_markup)
 
     action_colors = config.COLORS
     risk_colors = config.RISK_COLORS
@@ -521,6 +543,104 @@ td.diff_header {{ text-align: right; }}
     .cards {{ grid-template-columns: repeat(2, 1fr); }}
     body {{ padding: 10px; }}
 }}
+
+/* Tabs */
+.tab-bar {{
+    display: flex;
+    gap: 4px;
+    padding: 0 32px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+}}
+.tab-btn {{
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    padding: 14px 4px;
+    margin: 0 14px -1px 0;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+}}
+.tab-btn:hover {{ color: var(--text); }}
+.tab-btn.active {{ color: var(--blue); border-bottom-color: var(--blue); }}
+.tab-panel {{ display: none; }}
+.tab-panel.active {{ display: block; }}
+
+/* Dependency graph viewer */
+.graph-toolbar {{
+    padding: 18px 32px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}}
+#graphSearch {{
+    flex: 1 1 260px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 13.5px;
+    outline: none;
+}}
+#graphSearch:focus {{ border-color: var(--blue); box-shadow: 0 0 0 3px rgba(91,157,255,0.15); }}
+.zoom-controls {{ display: flex; gap: 6px; }}
+.zoom-btn {{
+    font-family: var(--font-mono);
+    font-size: 13px;
+    width: 32px; height: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+}}
+.zoom-btn:hover {{ border-color: var(--blue); color: var(--blue); }}
+.graph-hint {{ font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }}
+.graph-stage {{
+    height: 78vh;
+    overflow: hidden;
+    position: relative;
+    background:
+        linear-gradient(var(--surface) 1px, transparent 1px) 0 0 / 24px 24px,
+        linear-gradient(90deg, var(--surface) 1px, transparent 1px) 0 0 / 24px 24px,
+        var(--bg);
+    cursor: grab;
+}}
+.graph-stage.grabbing {{ cursor: grabbing; }}
+.graph-panel {{
+    position: absolute;
+    top: 0; left: 0;
+    background: #f7f8fa;
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    padding: 24px;
+    transform-origin: 0 0;
+}}
+.graph-panel svg {{ display: block; max-width: none !important; }}
+.graph-panel .node polygon,
+.graph-panel .node ellipse,
+.graph-panel .node path {{ transition: opacity 0.15s ease, filter 0.15s ease; }}
+.graph-panel .node text {{ transition: opacity 0.15s ease; }}
+.graph-dim polygon, .graph-dim ellipse, .graph-dim path {{ opacity: 0.15; }}
+.graph-dim text {{ opacity: 0.2; }}
+.graph-match polygon, .graph-match ellipse, .graph-match path {{
+    filter: drop-shadow(0 0 4px var(--blue));
+    stroke: var(--blue) !important;
+    stroke-width: 2px !important;
+}}
+.graph-empty {{
+    padding: 60px 20px;
+    text-align: center;
+    color: var(--text-faint);
+    font-family: var(--font-mono);
+    font-size: 13px;
+}}
 </style>
 </head>
 <body>
@@ -551,6 +671,12 @@ td.diff_header {{ text-align: right; }}
 
     {f'<div class="llm-section"><h2>AI Architecture Review</h2><div class="llm-body">{llm_html}</div></div>' if llm_explanation else ''}
 
+    {f'''<div class="tab-bar">
+        <button class="tab-btn active" data-tab="changes">Changes</button>
+        <button class="tab-btn" data-tab="graph">Dependency Graph</button>
+    </div>''' if has_graph else ''}
+
+    <div class="tab-panel active" id="tab-changes">
     <div class="controls">
         <input type="text" id="searchInput" placeholder="Search by address, type, or provider…" onkeyup="filterTable()">
         <div class="filter-group" id="actionFilters" data-kind="action">
@@ -574,6 +700,22 @@ td.diff_header {{ text-align: right; }}
     </div>
 
     {f'<div class="footnote">Showing {len(visible_changes)} of {len(all_changes)} changes ({hidden_count} not rendered — increase max_table_rows to see more).</div>' if hidden_count else ''}
+    </div>
+
+    {f'''<div class="tab-panel" id="tab-graph">
+        <div class="graph-toolbar">
+            <input type="text" id="graphSearch" placeholder="Highlight a resource address or type…">
+            <div class="zoom-controls">
+                <button class="zoom-btn" id="zoomOut" title="Zoom out">-</button>
+                <button class="zoom-btn" id="zoomReset" title="Fit to screen">⤢</button>
+                <button class="zoom-btn" id="zoomIn" title="Zoom in">+</button>
+            </div>
+            <span class="graph-hint">Scroll to zoom · drag to pan</span>
+        </div>
+        <div class="graph-stage" id="graphStage">
+            <div class="graph-panel" id="graphPanel">{graph_svg_markup}</div>
+        </div>
+    </div>''' if has_graph else ''}
 </div>
 <script>
 const searchInput = document.getElementById("searchInput");
@@ -606,6 +748,104 @@ document.getElementById("actionFilters").addEventListener("click", (e) => {{
 }});
 
 updateCount();
+
+// --- Tabs ---
+document.querySelectorAll(".tab-btn").forEach(btn => {{
+    btn.addEventListener("click", () => {{
+        document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+        if (btn.dataset.tab === "graph" && window.fitGraphToScreen) window.fitGraphToScreen();
+    }});
+}});
+
+// --- Dependency graph: pan, zoom, search ---
+const stage = document.getElementById("graphStage");
+const panel = document.getElementById("graphPanel");
+if (stage && panel) {{
+    let scale = 1, panX = 0, panY = 0, dragging = false, startX = 0, startY = 0, fitted = false;
+
+    function applyTransform() {{
+        panel.style.transform = `translate(${{panX}}px, ${{panY}}px) scale(${{scale}})`;
+    }}
+
+    window.fitGraphToScreen = function () {{
+        const svg = panel.querySelector("svg");
+        if (!svg) return;
+        const svgWidth = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width
+            ? svg.viewBox.baseVal.width : svg.getBoundingClientRect().width || 800;
+        const svgHeight = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.height
+            ? svg.viewBox.baseVal.height : svg.getBoundingClientRect().height || 600;
+        const stageRect = stage.getBoundingClientRect();
+        const padding = 48;
+        scale = Math.min(
+            (stageRect.width - padding) / svgWidth,
+            (stageRect.height - padding) / svgHeight,
+            1.5
+        );
+        if (!isFinite(scale) || scale <= 0) scale = 1;
+        panX = (stageRect.width - svgWidth * scale) / 2;
+        panY = (stageRect.height - svgHeight * scale) / 2;
+        applyTransform();
+        fitted = true;
+    }};
+
+    stage.addEventListener("wheel", (e) => {{
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 1.1 : 0.9;
+        scale = Math.min(Math.max(scale * delta, 0.1), 6);
+        applyTransform();
+    }}, {{ passive: false }});
+
+    stage.addEventListener("mousedown", (e) => {{
+        dragging = true;
+        stage.classList.add("grabbing");
+        startX = e.clientX - panX;
+        startY = e.clientY - panY;
+    }});
+    window.addEventListener("mousemove", (e) => {{
+        if (!dragging) return;
+        panX = e.clientX - startX;
+        panY = e.clientY - startY;
+        applyTransform();
+    }});
+    window.addEventListener("mouseup", () => {{
+        dragging = false;
+        stage.classList.remove("grabbing");
+    }});
+
+    document.getElementById("zoomIn").addEventListener("click", () => {{
+        scale = Math.min(scale * 1.25, 6);
+        applyTransform();
+    }});
+    document.getElementById("zoomOut").addEventListener("click", () => {{
+        scale = Math.max(scale * 0.8, 0.1);
+        applyTransform();
+    }});
+    document.getElementById("zoomReset").addEventListener("click", () => window.fitGraphToScreen());
+
+    const graphSearch = document.getElementById("graphSearch");
+    graphSearch.addEventListener("keyup", () => {{
+        const term = graphSearch.value.trim().toLowerCase();
+        const nodes = panel.querySelectorAll("svg .node");
+        nodes.forEach(node => {{
+            node.classList.remove("graph-dim", "graph-match");
+            if (!term) return;
+            const label = (node.textContent || "").toLowerCase();
+            if (label.includes(term)) {{
+                node.classList.add("graph-match");
+            }} else {{
+                node.classList.add("graph-dim");
+            }}
+        }});
+    }});
+
+    window.addEventListener("load", () => {{
+        if (document.getElementById("tab-graph").classList.contains("active")) window.fitGraphToScreen();
+    }});
+    window.addEventListener("resize", () => {{ if (fitted) window.fitGraphToScreen(); }});
+}}
 </script>
 </body>
 </html>"""
